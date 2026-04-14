@@ -287,8 +287,16 @@ jobs:
             fi
             echo "" >> "$SUMMARY"
 
-            echo "| Java | Extensions | JAR | Avg Duration (ms) | Dur Δ | Avg Contention (ms) | Cont Δ | Avg GC Count | GC Δ | Avg GC Pause (ms) | Pause Δ |" >> "$SUMMARY"
-            echo "|---|---|---|---|---|---|---|---|---|---|---|" >> "$SUMMARY"
+            # Check if we have JFR data (any non-zero contention/gc values)
+            HAS_JFR=$(awk -F',' '$8 > 0 || $9 > 0 {found=1; exit} END{print found+0}' all.csv)
+
+            if [ "$HAS_JFR" = "1" ]; then
+              echo "| Java | Extensions | JAR | Avg Duration (ms) | Dur Δ | Avg Contention (ms) | Cont Δ | Avg GC Count | GC Δ | Avg GC Pause (ms) | Pause Δ |" >> "$SUMMARY"
+              echo "|---|---|---|---|---|---|---|---|---|---|---|" >> "$SUMMARY"
+            else
+              echo "| Java | Extensions | JAR | Avg Duration (ms) | Dur Δ |" >> "$SUMMARY"
+              echo "|---|---|---|---|---|" >> "$SUMMARY"
+            fi
 
             # Calculate averages per config, filtered by type
             awk -F',' -v stype="$START_TYPE" '
@@ -320,7 +328,7 @@ jobs:
                 base_cont=$(echo "$base_line" | cut -d',' -f5)
                 base_gc_cnt=$(echo "$base_line" | cut -d',' -f6)
                 base_gc_pause=$(echo "$base_line" | cut -d',' -f7)
-                dur_delta=$(awk "BEGIN{printf \"%+.0f%%\", ($avg_dur - $base_dur) / $base_dur * 100}")
+                dur_delta=$(awk "BEGIN{if($base_dur>0) printf \"%+.0f%%\", ($avg_dur - $base_dur) / $base_dur * 100; else print \"—\"}")
                 cont_delta=$(awk "BEGIN{if($base_cont>0) printf \"%+.0f%%\", ($avg_cont - $base_cont) / $base_cont * 100; else print \"—\"}")
                 gc_cnt_delta=$(awk "BEGIN{if($base_gc_cnt>0) printf \"%+.0f%%\", ($avg_gc_cnt - $base_gc_cnt) / $base_gc_cnt * 100; else print \"—\"}")
                 gc_pause_delta=$(awk "BEGIN{if($base_gc_pause>0) printf \"%+.0f%%\", ($avg_gc_pause - $base_gc_pause) / $base_gc_pause * 100; else print \"—\"}")
@@ -330,8 +338,13 @@ jobs:
               fi
               ext_label="yes"
               [ "$ext" = "false" ] && ext_label="no"
-              echo "| $java | $ext_label | **patched** | **$avg_dur** | | **$avg_cont** | | **$avg_gc_cnt** | | **$avg_gc_pause** | |" >> "$SUMMARY"
-              echo "| $java | $ext_label | baseline | $base_dur | $dur_delta | $base_cont | $cont_delta | $base_gc_cnt | $gc_cnt_delta | $base_gc_pause | $gc_pause_delta |" >> "$SUMMARY"
+              if [ "$HAS_JFR" = "1" ]; then
+                echo "| $java | $ext_label | **patched** | **$avg_dur** | | **$avg_cont** | | **$avg_gc_cnt** | | **$avg_gc_pause** | |" >> "$SUMMARY"
+                echo "| $java | $ext_label | baseline | $base_dur | $dur_delta | $base_cont | $cont_delta | $base_gc_cnt | $gc_cnt_delta | $base_gc_pause | $gc_pause_delta |" >> "$SUMMARY"
+              else
+                echo "| $java | $ext_label | **patched** | **$avg_dur** | |" >> "$SUMMARY"
+                echo "| $java | $ext_label | baseline | $base_dur | $dur_delta |" >> "$SUMMARY"
+              fi
             done < <(grep -v "baseline" "averages-${START_TYPE}.csv" | sort)
 
             echo "" >> "$SUMMARY"
