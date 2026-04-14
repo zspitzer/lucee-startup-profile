@@ -190,7 +190,10 @@ jobs:
               DUR=$(cat "$RESULTS/p$P/run$R.ms" 2>/dev/null || echo 0)
               CONT=$(jfr print --events jdk.JavaMonitorEnter "$JFR" 2>&1 \
                 | awk -F'= ' '/duration =/{gsub(/ ms/,"",$2); sum+=$2} END{printf "%.0f", sum}')
-              echo "${{ steps.jar.outputs.name }},${{ matrix.java }},${{ !matrix.skipExtensions }},$P,$R,$DUR,$CONT" >> "$CSV"
+              GC_CNT=$(jfr summary "$JFR" 2>&1 | awk '/jdk.GarbageCollection /{print $2}')
+              GC_PAUSE=$(jfr print --events jdk.GCPhasePause "$JFR" 2>&1 \
+                | awk -F'= ' '/duration =/{gsub(/ ms/,"",$2); sum+=$2} END{printf "%.1f", sum}')
+              echo "${{ steps.jar.outputs.name }},${{ matrix.java }},${{ !matrix.skipExtensions }},$P,$R,$DUR,$CONT,${GC_CNT:-0},${GC_PAUSE:-0}" >> "$CSV"
             done
           done
 
@@ -223,50 +226,53 @@ jobs:
           echo "**Parallelism:** ${{ inputs.parallelism }}" >> "$SUMMARY"
           echo "**Runs:** ${{ inputs.runs }} (run 1 = cold start, excluded from averages)" >> "$SUMMARY"
           echo "" >> "$SUMMARY"
-          echo "| Java | Extensions | JAR | Avg Duration (ms) | Avg Contention (ms) | Duration Δ | Contention Δ |" >> "$SUMMARY"
-          echo "|---|---|---|---|---|---|---|" >> "$SUMMARY"
+          echo "| Java | Extensions | JAR | Avg Duration (ms) | Dur Δ | Avg Contention (ms) | Cont Δ | Avg GC Count | GC Δ | Avg GC Pause (ms) | Pause Δ |" >> "$SUMMARY"
+          echo "|---|---|---|---|---|---|---|---|---|---|---|" >> "$SUMMARY"
 
           # Calculate averages per config (skip run 1 = cold start)
+          # CSV cols: jar,java,ext,parallelism,run,duration,contention,gc_count,gc_pause
           awk -F',' '
           $5 > 1 {
             key = $2 SUBSEP $3 SUBSEP $1
             dur[key] += $6
             cont[key] += $7
+            gc_cnt[key] += $8
+            gc_pause[key] += $9
             count[key]++
           }
           END {
             for (k in dur) {
               split(k, a, SUBSEP)
               java = a[1]; ext = a[2]; jar = a[3]
-              avg_dur = dur[k] / count[k]
-              avg_cont = cont[k] / count[k]
-              printf "%s,%s,%s,%.0f,%.0f\n", java, ext, jar, avg_dur, avg_cont
+              printf "%s,%s,%s,%.0f,%.0f,%.0f,%.1f\n", java, ext, jar, dur[k]/count[k], cont[k]/count[k], gc_cnt[k]/count[k], gc_pause[k]/count[k]
             }
           }' all.csv | sort > averages.csv
 
           # Pair patched vs baseline and compute deltas
-          while IFS=',' read -r java ext jar avg_dur avg_cont; do
+          # averages.csv cols: java,ext,jar,avg_dur,avg_cont,avg_gc_cnt,avg_gc_pause
+          while IFS=',' read -r java ext jar avg_dur avg_cont avg_gc_cnt avg_gc_pause; do
             if [[ "$jar" == *baseline* ]]; then
               continue
             fi
-            # Find matching baseline
             base_jar=$(echo "$jar" | sed 's/$/-baseline/')
             base_line=$(grep "^$java,$ext,$base_jar," averages.csv || echo "")
             if [ -n "$base_line" ]; then
               base_dur=$(echo "$base_line" | cut -d',' -f4)
               base_cont=$(echo "$base_line" | cut -d',' -f5)
-              dur_delta=$(awk "BEGIN{d=($avg_dur - $base_dur) / $base_dur * 100; printf \"%+.0f%%\", d}")
-              cont_delta=$(awk "BEGIN{d=($avg_cont - $base_cont) / $base_cont * 100; printf \"%+.0f%%\", d}")
+              base_gc_cnt=$(echo "$base_line" | cut -d',' -f6)
+              base_gc_pause=$(echo "$base_line" | cut -d',' -f7)
+              dur_delta=$(awk "BEGIN{printf \"%+.0f%%\", ($avg_dur - $base_dur) / $base_dur * 100}")
+              cont_delta=$(awk "BEGIN{if($base_cont>0) printf \"%+.0f%%\", ($avg_cont - $base_cont) / $base_cont * 100; else print \"—\"}")
+              gc_cnt_delta=$(awk "BEGIN{if($base_gc_cnt>0) printf \"%+.0f%%\", ($avg_gc_cnt - $base_gc_cnt) / $base_gc_cnt * 100; else print \"—\"}")
+              gc_pause_delta=$(awk "BEGIN{if($base_gc_pause>0) printf \"%+.0f%%\", ($avg_gc_pause - $base_gc_pause) / $base_gc_pause * 100; else print \"—\"}")
             else
-              base_dur="?"
-              base_cont="?"
-              dur_delta="?"
-              cont_delta="?"
+              base_dur="?"; base_cont="?"; base_gc_cnt="?"; base_gc_pause="?"
+              dur_delta="?"; cont_delta="?"; gc_cnt_delta="?"; gc_pause_delta="?"
             fi
             ext_label="yes"
             [ "$ext" = "false" ] && ext_label="no"
-            echo "| $java | $ext_label | **patched** | **$avg_dur** | **$avg_cont** | | |" >> "$SUMMARY"
-            echo "| $java | $ext_label | baseline | $base_dur | $base_cont | $dur_delta | $cont_delta |" >> "$SUMMARY"
+            echo "| $java | $ext_label | **patched** | **$avg_dur** | | **$avg_cont** | | **$avg_gc_cnt** | | **$avg_gc_pause** | |" >> "$SUMMARY"
+            echo "| $java | $ext_label | baseline | $base_dur | $dur_delta | $base_cont | $cont_delta | $base_gc_cnt | $gc_cnt_delta | $base_gc_pause | $gc_pause_delta |" >> "$SUMMARY"
           done < <(grep -v "baseline" averages.csv | sort)
 
           echo "" >> "$SUMMARY"
