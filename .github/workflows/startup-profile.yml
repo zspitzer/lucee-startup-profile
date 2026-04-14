@@ -9,24 +9,17 @@ on:
       luceeVersion:
         description: 'Lucee version from update server (e.g. 7.1/snapshot, 7.0/snapshot). Leave empty to use local JAR.'
         default: ''
-      java:
-        description: 'Java version'
-        default: '21'
       parallelism:
         description: 'Felix resolver parallelism (comma-sep for multiple, e.g. 4,8,16)'
-        default: '4,8,16'
+        default: '4'
       runs:
         description: 'Runs per config'
         default: '3'
-      skipExtensions:
-        description: 'Set LUCEE_EXTENSIONS_INSTALL=false (like light JAR)'
-        type: boolean
-        default: false
 
 jobs:
   profile:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -35,15 +28,18 @@ jobs:
             file: jars/lucee-7.2.0.51-ALPHA.jar
           - name: lucee-7.2.0.51-ALPHA-baseline
             file: jars/lucee-7.2.0.51-ALPHA-baseline.jar
+        java: ['21', '25']
+        skipExtensions: [false, true]
+    name: "${{ matrix.jar.name }} java${{ matrix.java }} ext=${{ !matrix.skipExtensions }}"
     steps:
       - uses: actions/checkout@v6
         with:
           lfs: true
 
-      - name: Set up JDK ${{ inputs.java }}
+      - name: Set up JDK ${{ matrix.java }}
         uses: actions/setup-java@v5
         with:
-          java-version: '${{ inputs.java }}'
+          java-version: '${{ matrix.java }}'
           distribution: 'temurin'
 
       - name: Checkout script-runner
@@ -70,7 +66,8 @@ jobs:
       - name: Run startup profiles
         shell: bash
         run: |
-          RESULTS="$GITHUB_WORKSPACE/results/${{ steps.jar.outputs.name }}"
+          LABEL="${{ steps.jar.outputs.name }}-java${{ matrix.java }}-ext${{ !matrix.skipExtensions }}"
+          RESULTS="$GITHUB_WORKSPACE/results/$LABEL"
           mkdir -p "$RESULTS"
 
           # Build ant args for JAR source
@@ -81,6 +78,8 @@ jobs:
             JAR_ARG="-DluceeJar=${{ steps.jar.outputs.jar }}"
             echo "JAR: ${{ steps.jar.outputs.jar }} ($(ls -lh "${{ steps.jar.outputs.jar }}" | awk '{print $5}'))"
           fi
+          echo "Java: ${{ matrix.java }}"
+          echo "Skip extensions: ${{ matrix.skipExtensions }}"
           echo "Cores: $(nproc)"
           echo ""
 
@@ -97,7 +96,7 @@ jobs:
 
               export FELIX_RESOLVER_PARALLELISM="$P"
               export FELIX_SYSTEMBUNDLE_ACTIVATORS_START_PARALLELISM="$P"
-              if [ "${{ inputs.skipExtensions }}" = "true" ]; then
+              if [ "${{ matrix.skipExtensions }}" = "true" ]; then
                 export LUCEE_EXTENSIONS_INSTALL=false
               fi
 
@@ -124,20 +123,19 @@ jobs:
       - name: Extract metrics
         shell: bash
         run: |
-          RESULTS="$GITHUB_WORKSPACE/results/${{ steps.jar.outputs.name }}"
+          LABEL="${{ steps.jar.outputs.name }}-java${{ matrix.java }}-ext${{ !matrix.skipExtensions }}"
+          RESULTS="$GITHUB_WORKSPACE/results/$LABEL"
 
           IFS=',' read -ra PARALLELISM_VALUES <<< "${{ inputs.parallelism }}"
 
           SUMMARY="$RESULTS/summary.md"
-          echo "# Startup Profile: ${{ steps.jar.outputs.name }}" > "$SUMMARY"
+          echo "# ${{ steps.jar.outputs.name }} — Java ${{ matrix.java }}, extensions=${{ !matrix.skipExtensions }}" > "$SUMMARY"
           echo "" >> "$SUMMARY"
           echo "**Description:** ${{ inputs.description }}" >> "$SUMMARY"
-          echo "**JAR:** ${{ steps.jar.outputs.name }}" >> "$SUMMARY"
           echo "**Java:** $(java -version 2>&1 | head -1)" >> "$SUMMARY"
           echo "**Runner:** $(nproc) cores" >> "$SUMMARY"
           echo "**Parallelism:** ${{ inputs.parallelism }}" >> "$SUMMARY"
           echo "**Runs:** ${{ inputs.runs }}" >> "$SUMMARY"
-          echo "**Skip extensions:** ${{ inputs.skipExtensions }}" >> "$SUMMARY"
           echo "" >> "$SUMMARY"
           echo "| Parallelism | Run | Duration (ms) | Threads | Contention (ms) | SecureRandom (ms) | GC count | GC pause (ms) | Classes |" >> "$SUMMARY"
           echo "|---|---|---|---|---|---|---|---|---|" >> "$SUMMARY"
@@ -171,10 +169,12 @@ jobs:
 
       - name: Post summary
         shell: bash
-        run: cat "$GITHUB_WORKSPACE/results/${{ steps.jar.outputs.name }}/summary.md" >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          LABEL="${{ steps.jar.outputs.name }}-java${{ matrix.java }}-ext${{ !matrix.skipExtensions }}"
+          cat "$GITHUB_WORKSPACE/results/$LABEL/summary.md" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload results
         uses: actions/upload-artifact@v7
         with:
-          name: startup-profile-${{ steps.jar.outputs.name }}
+          name: "startup-profile-${{ steps.jar.outputs.name }}-java${{ matrix.java }}-ext${{ !matrix.skipExtensions }}"
           path: results/
