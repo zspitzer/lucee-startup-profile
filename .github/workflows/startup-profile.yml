@@ -6,6 +6,9 @@ on:
       description:
         description: 'What this run is testing (shown in summary)'
         default: 'baseline'
+      luceeVersion:
+        description: 'Lucee version from update server (e.g. 7.1/snapshot, 7.0/snapshot). Leave empty to use local JAR.'
+        default: ''
       java:
         description: 'Java version'
         default: '21'
@@ -43,14 +46,35 @@ jobs:
           repository: lucee/script-runner
           path: script-runner
 
+      - name: Resolve JAR
+        id: jar
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.luceeVersion }}" ]; then
+            echo "mode=version" >> "$GITHUB_OUTPUT"
+            echo "name=${{ inputs.luceeVersion }}" >> "$GITHUB_OUTPUT"
+            echo "Using published version: ${{ inputs.luceeVersion }}"
+          else
+            echo "mode=local" >> "$GITHUB_OUTPUT"
+            echo "name=${{ matrix.jar.name }}" >> "$GITHUB_OUTPUT"
+            echo "jar=$GITHUB_WORKSPACE/${{ matrix.jar.file }}" >> "$GITHUB_OUTPUT"
+            echo "Using local JAR: ${{ matrix.jar.file }}"
+          fi
+
       - name: Run startup profiles
         shell: bash
         run: |
-          JAR="$GITHUB_WORKSPACE/${{ matrix.jar.file }}"
-          RESULTS="$GITHUB_WORKSPACE/results/${{ matrix.jar.name }}"
+          RESULTS="$GITHUB_WORKSPACE/results/${{ steps.jar.outputs.name }}"
           mkdir -p "$RESULTS"
 
-          echo "JAR: $JAR ($(ls -lh "$JAR" | awk '{print $5}'))"
+          # Build ant args for JAR source
+          if [ "${{ steps.jar.outputs.mode }}" = "version" ]; then
+            JAR_ARG="-DluceeVersion=${{ inputs.luceeVersion }}"
+            echo "Version: ${{ inputs.luceeVersion }}"
+          else
+            JAR_ARG="-DluceeJar=${{ steps.jar.outputs.jar }}"
+            echo "JAR: ${{ steps.jar.outputs.jar }} ($(ls -lh "${{ steps.jar.outputs.jar }}" | awk '{print $5}'))"
+          fi
           echo "Cores: $(nproc)"
           echo ""
 
@@ -78,7 +102,7 @@ jobs:
                 -DFlightRecordingSettings="$GITHUB_WORKSPACE/jfc-startup.jfc" \
                 -DFlightRecordingFilename="$RESULTS/p$P/run$R.jfr" \
                 -DpostCleanup="true" \
-                -DluceeJar="$JAR" \
+                $JAR_ARG \
                 > "$RESULTS/p$P/run$R.txt" 2>&1
 
               END_NS=$(date +%s%N)
@@ -91,15 +115,15 @@ jobs:
       - name: Extract metrics
         shell: bash
         run: |
-          RESULTS="$GITHUB_WORKSPACE/results/${{ matrix.jar.name }}"
+          RESULTS="$GITHUB_WORKSPACE/results/${{ steps.jar.outputs.name }}"
 
           IFS=',' read -ra PARALLELISM_VALUES <<< "${{ inputs.parallelism }}"
 
           SUMMARY="$RESULTS/summary.md"
-          echo "# Startup Profile: ${{ matrix.jar.name }}" > "$SUMMARY"
+          echo "# Startup Profile: ${{ steps.jar.outputs.name }}" > "$SUMMARY"
           echo "" >> "$SUMMARY"
           echo "**Description:** ${{ inputs.description }}" >> "$SUMMARY"
-          echo "**JAR:** ${{ matrix.jar.name }}" >> "$SUMMARY"
+          echo "**JAR:** ${{ steps.jar.outputs.name }}" >> "$SUMMARY"
           echo "**Java:** $(java -version 2>&1 | head -1)" >> "$SUMMARY"
           echo "**Runner:** $(nproc) cores" >> "$SUMMARY"
           echo "**Parallelism:** ${{ inputs.parallelism }}" >> "$SUMMARY"
@@ -137,10 +161,10 @@ jobs:
 
       - name: Post summary
         shell: bash
-        run: cat "$GITHUB_WORKSPACE/results/${{ matrix.jar.name }}/summary.md" >> "$GITHUB_STEP_SUMMARY"
+        run: cat "$GITHUB_WORKSPACE/results/${{ steps.jar.outputs.name }}/summary.md" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload results
         uses: actions/upload-artifact@v7
         with:
-          name: startup-profile-${{ matrix.jar.name }}
+          name: startup-profile-${{ steps.jar.outputs.name }}
           path: results/
