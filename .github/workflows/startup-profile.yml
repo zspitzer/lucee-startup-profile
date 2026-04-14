@@ -3,6 +3,9 @@ name: Startup Profile
 on:
   workflow_dispatch:
     inputs:
+      description:
+        description: 'What this run is testing (shown in summary)'
+        default: 'baseline'
       java:
         description: 'Java version'
         default: '21'
@@ -95,8 +98,12 @@ jobs:
           SUMMARY="$RESULTS/summary.md"
           echo "# Startup Profile: ${{ matrix.jar.name }}" > "$SUMMARY"
           echo "" >> "$SUMMARY"
+          echo "**Description:** ${{ inputs.description }}" >> "$SUMMARY"
+          echo "**JAR:** ${{ matrix.jar.name }}" >> "$SUMMARY"
           echo "**Java:** $(java -version 2>&1 | head -1)" >> "$SUMMARY"
           echo "**Runner:** $(nproc) cores" >> "$SUMMARY"
+          echo "**Parallelism:** ${{ inputs.parallelism }}" >> "$SUMMARY"
+          echo "**Runs:** ${{ inputs.runs }}" >> "$SUMMARY"
           echo "" >> "$SUMMARY"
           echo "| Parallelism | Run | Duration (ms) | Threads | Contention (ms) | SecureRandom (ms) | GC count | GC pause (ms) | Classes |" >> "$SUMMARY"
           echo "|---|---|---|---|---|---|---|---|---|" >> "$SUMMARY"
