@@ -65,6 +65,8 @@ jobs:
               export FELIX_RESOLVER_PARALLELISM="$P"
               export FELIX_SYSTEMBUNDLE_ACTIVATORS_START_PARALLELISM="$P"
 
+              START_NS=$(date +%s%N)
+
               ant -buildfile "$GITHUB_WORKSPACE/script-runner" \
                 -Dwebroot="$GITHUB_WORKSPACE" \
                 -Dexecute="/hello.cfm" \
@@ -76,7 +78,10 @@ jobs:
                 -DluceeJar="$JAR" \
                 > "$RESULTS/p$P/run$R.txt" 2>&1
 
-              echo "  JFR: $(ls -lh "$RESULTS/p$P/run$R.jfr" 2>/dev/null | awk '{print $5}')"
+              END_NS=$(date +%s%N)
+              ELAPSED_MS=$(( (END_NS - START_NS) / 1000000 ))
+              echo "$ELAPSED_MS" > "$RESULTS/p$P/run$R.ms"
+              echo "  ${ELAPSED_MS}ms  JFR: $(ls -lh "$RESULTS/p$P/run$R.jfr" 2>/dev/null | awk '{print $5}')"
             done
           done
 
@@ -93,7 +98,7 @@ jobs:
           echo "**Java:** $(java -version 2>&1 | head -1)" >> "$SUMMARY"
           echo "**Runner:** $(nproc) cores" >> "$SUMMARY"
           echo "" >> "$SUMMARY"
-          echo "| Parallelism | Run | Duration | Threads | Contention (ms) | SecureRandom (ms) | GC count | GC pause (ms) | Classes |" >> "$SUMMARY"
+          echo "| Parallelism | Run | Duration (ms) | Threads | Contention (ms) | SecureRandom (ms) | GC count | GC pause (ms) | Classes |" >> "$SUMMARY"
           echo "|---|---|---|---|---|---|---|---|---|" >> "$SUMMARY"
 
           for P in "${PARALLELISM_VALUES[@]}"; do
@@ -105,7 +110,7 @@ jobs:
                 continue
               fi
 
-              DURATION=$(jfr summary "$JFR" 2>&1 | awk '/Duration:/{print $2, $3}')
+              DURATION=$(cat "$RESULTS/p$P/run$R.ms" 2>/dev/null || echo "?")
               THREADS=$(jfr summary "$JFR" 2>&1 | awk '/jdk.ThreadStart /{print $2}')
               CONTENTION=$(jfr print --events jdk.JavaMonitorEnter "$JFR" 2>&1 \
                 | awk -F'= ' '/duration =/{gsub(/ ms/,"",$2); sum+=$2} END{printf "%.0f", sum}')
