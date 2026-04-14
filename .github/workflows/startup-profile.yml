@@ -15,6 +15,10 @@ on:
       runs:
         description: 'Runs per config (run 1 = cold deploy, run 2+ = warm starts)'
         default: '5'
+      jfr:
+        description: 'Enable JFR recording (disable for faster runs, duration-only)'
+        type: boolean
+        default: true
 
 jobs:
   profile:
@@ -116,13 +120,17 @@ jobs:
 
               START_NS=$(date +%s%N)
 
+              # JFR args (conditional)
+              JFR_ARGS=""
+              if [ "${{ inputs.jfr }}" = "true" ]; then
+                JFR_ARGS="-DFlightRecording=true -DFlightRecordingSettings=$GITHUB_WORKSPACE/jfc-startup.jfc -DFlightRecordingFilename=$RESULTS/p$P/run$R.jfr"
+              fi
+
               ant -buildfile "$GITHUB_WORKSPACE/script-runner" \
                 -Dwebroot="$GITHUB_WORKSPACE" \
                 -Dexecute="/hello.cfm" \
                 -Ddebugger="false" \
-                -DFlightRecording="true" \
-                -DFlightRecordingSettings="$GITHUB_WORKSPACE/jfc-startup.jfc" \
-                -DFlightRecordingFilename="$RESULTS/p$P/run$R.jfr" \
+                $JFR_ARGS \
                 -Dcleanup="$CLEANUP" \
                 -DpostCleanup="$POST_CLEANUP" \
                 $JAR_ARG \
@@ -158,32 +166,42 @@ jobs:
           echo "**Runner:** $(nproc) cores" >> "$SUMMARY"
           echo "**Parallelism:** ${{ inputs.parallelism }}" >> "$SUMMARY"
           echo "**Runs:** ${{ inputs.runs }} (run 1 = cold deploy, run 2+ = warm start)" >> "$SUMMARY"
+          echo "**JFR:** ${{ inputs.jfr }}" >> "$SUMMARY"
           echo "" >> "$SUMMARY"
-          echo "| Parallelism | Run | Type | Duration (ms) | Threads | Contention (ms) | SecureRandom (ms) | GC count | GC pause (ms) | Classes |" >> "$SUMMARY"
-          echo "|---|---|---|---|---|---|---|---|---|---|" >> "$SUMMARY"
+
+          if [ "${{ inputs.jfr }}" = "true" ]; then
+            echo "| Parallelism | Run | Type | Duration (ms) | Threads | Contention (ms) | SecureRandom (ms) | GC count | GC pause (ms) | Classes |" >> "$SUMMARY"
+            echo "|---|---|---|---|---|---|---|---|---|---|" >> "$SUMMARY"
+          else
+            echo "| Parallelism | Run | Type | Duration (ms) |" >> "$SUMMARY"
+            echo "|---|---|---|---|" >> "$SUMMARY"
+          fi
 
           for P in "${PARALLELISM_VALUES[@]}"; do
             P=$(echo "$P" | tr -d ' ')
             for R in $(seq 1 ${{ inputs.runs }}); do
-              JFR="$RESULTS/p$P/run$R.jfr"
-              if [ ! -f "$JFR" ]; then
-                echo "MISSING: $JFR"
-                continue
-              fi
-
               DURATION=$(cat "$RESULTS/p$P/run$R.ms" 2>/dev/null || echo "?")
               TYPE=$(cat "$RESULTS/p$P/run$R.type" 2>/dev/null || echo "?")
-              THREADS=$(jfr summary "$JFR" 2>&1 | awk '/jdk.ThreadStart /{print $2}')
-              CONTENTION=$(jfr print --events jdk.JavaMonitorEnter "$JFR" 2>&1 \
-                | awk -F'= ' '/duration =/{gsub(/ ms/,"",$2); sum+=$2} END{printf "%.0f", sum}')
-              SR=$(jfr print --events jdk.JavaMonitorEnter "$JFR" 2>&1 \
-                | awk -F'= ' '/monitorClass =/{mc=$2} /duration =/{d=$2} /eventThread =/{if(mc ~ /HashDrbg/) {gsub(/ ms/,"",d); sum+=d}} END{printf "%.0f", sum}')
-              GC_COUNT=$(jfr summary "$JFR" 2>&1 | awk '/jdk.GarbageCollection /{print $2}')
-              GC_PAUSE=$(jfr print --events jdk.GCPhasePause "$JFR" 2>&1 \
-                | awk -F'= ' '/duration =/{gsub(/ ms/,"",$2); sum+=$2} END{printf "%.1f", sum}')
-              CLASSES=$(jfr summary "$JFR" 2>&1 | awk '/jdk.ClassLoad /{print $2}')
 
-              echo "| $P | $R | $TYPE | $DURATION | $THREADS | $CONTENTION | $SR | $GC_COUNT | $GC_PAUSE | $CLASSES |" >> "$SUMMARY"
+              if [ "${{ inputs.jfr }}" = "true" ]; then
+                JFR="$RESULTS/p$P/run$R.jfr"
+                if [ ! -f "$JFR" ]; then
+                  echo "MISSING: $JFR"
+                  continue
+                fi
+                THREADS=$(jfr summary "$JFR" 2>&1 | awk '/jdk.ThreadStart /{print $2}')
+                CONTENTION=$(jfr print --events jdk.JavaMonitorEnter "$JFR" 2>&1 \
+                  | awk -F'= ' '/duration =/{gsub(/ ms/,"",$2); sum+=$2} END{printf "%.0f", sum}')
+                SR=$(jfr print --events jdk.JavaMonitorEnter "$JFR" 2>&1 \
+                  | awk -F'= ' '/monitorClass =/{mc=$2} /duration =/{d=$2} /eventThread =/{if(mc ~ /HashDrbg/) {gsub(/ ms/,"",d); sum+=d}} END{printf "%.0f", sum}')
+                GC_COUNT=$(jfr summary "$JFR" 2>&1 | awk '/jdk.GarbageCollection /{print $2}')
+                GC_PAUSE=$(jfr print --events jdk.GCPhasePause "$JFR" 2>&1 \
+                  | awk -F'= ' '/duration =/{gsub(/ ms/,"",$2); sum+=$2} END{printf "%.1f", sum}')
+                CLASSES=$(jfr summary "$JFR" 2>&1 | awk '/jdk.ClassLoad /{print $2}')
+                echo "| $P | $R | $TYPE | $DURATION | $THREADS | $CONTENTION | $SR | $GC_COUNT | $GC_PAUSE | $CLASSES |" >> "$SUMMARY"
+              else
+                echo "| $P | $R | $TYPE | $DURATION |" >> "$SUMMARY"
+              fi
             done
           done
 
@@ -208,15 +226,19 @@ jobs:
           for P in "${PARALLELISM_VALUES[@]}"; do
             P=$(echo "$P" | tr -d ' ')
             for R in $(seq 1 ${{ inputs.runs }}); do
-              JFR="$RESULTS/p$P/run$R.jfr"
-              [ ! -f "$JFR" ] && continue
               DUR=$(cat "$RESULTS/p$P/run$R.ms" 2>/dev/null || echo 0)
               TYPE=$(cat "$RESULTS/p$P/run$R.type" 2>/dev/null || echo "?")
-              CONT=$(jfr print --events jdk.JavaMonitorEnter "$JFR" 2>&1 \
-                | awk -F'= ' '/duration =/{gsub(/ ms/,"",$2); sum+=$2} END{printf "%.0f", sum}')
-              GC_CNT=$(jfr summary "$JFR" 2>&1 | awk '/jdk.GarbageCollection /{print $2}')
-              GC_PAUSE=$(jfr print --events jdk.GCPhasePause "$JFR" 2>&1 \
-                | awk -F'= ' '/duration =/{gsub(/ ms/,"",$2); sum+=$2} END{printf "%.1f", sum}')
+              CONT=0; GC_CNT=0; GC_PAUSE=0
+              if [ "${{ inputs.jfr }}" = "true" ]; then
+                JFR="$RESULTS/p$P/run$R.jfr"
+                [ -f "$JFR" ] && {
+                  CONT=$(jfr print --events jdk.JavaMonitorEnter "$JFR" 2>&1 \
+                    | awk -F'= ' '/duration =/{gsub(/ ms/,"",$2); sum+=$2} END{printf "%.0f", sum}')
+                  GC_CNT=$(jfr summary "$JFR" 2>&1 | awk '/jdk.GarbageCollection /{print $2}')
+                  GC_PAUSE=$(jfr print --events jdk.GCPhasePause "$JFR" 2>&1 \
+                    | awk -F'= ' '/duration =/{gsub(/ ms/,"",$2); sum+=$2} END{printf "%.1f", sum}')
+                }
+              fi
               # CSV: jar,java,ext,parallelism,run,type,duration,contention,gc_count,gc_pause
               echo "${{ steps.jar.outputs.name }},${{ matrix.java }},${{ !matrix.skipExtensions }},$P,$R,$TYPE,$DUR,$CONT,${GC_CNT:-0},${GC_PAUSE:-0}" >> "$CSV"
             done
