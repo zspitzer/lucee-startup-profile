@@ -3,6 +3,9 @@ name: Startup Profile
 on:
   workflow_dispatch:
     inputs:
+      java:
+        description: 'Java version'
+        default: '21'
       parallelism:
         description: 'Felix resolver parallelism (comma-sep for multiple, e.g. 4,8,16)'
         default: '4,8,16'
@@ -25,10 +28,10 @@ jobs:
         with:
           lfs: true
 
-      - name: Set up JDK 21
+      - name: Set up JDK ${{ inputs.java }}
         uses: actions/setup-java@v5
         with:
-          java-version: '21'
+          java-version: '${{ inputs.java }}'
           distribution: 'temurin'
 
       - name: Checkout script-runner
@@ -90,8 +93,8 @@ jobs:
           echo "**Java:** $(java -version 2>&1 | head -1)" >> "$SUMMARY"
           echo "**Runner:** $(nproc) cores" >> "$SUMMARY"
           echo "" >> "$SUMMARY"
-          echo "| Parallelism | Run | Threads | Contention (ms) | SecureRandom (ms) | GC count | GC pause (ms) | Classes |" >> "$SUMMARY"
-          echo "|---|---|---|---|---|---|---|---|" >> "$SUMMARY"
+          echo "| Parallelism | Run | Duration | Threads | Contention (ms) | SecureRandom (ms) | GC count | GC pause (ms) | Classes |" >> "$SUMMARY"
+          echo "|---|---|---|---|---|---|---|---|---|" >> "$SUMMARY"
 
           for P in "${PARALLELISM_VALUES[@]}"; do
             P=$(echo "$P" | tr -d ' ')
@@ -102,6 +105,7 @@ jobs:
                 continue
               fi
 
+              DURATION=$(jfr summary "$JFR" 2>&1 | awk '/Duration:/{print $2, $3}')
               THREADS=$(jfr summary "$JFR" 2>&1 | awk '/jdk.ThreadStart /{print $2}')
               CONTENTION=$(jfr print --events jdk.JavaMonitorEnter "$JFR" 2>&1 \
                 | awk -F'= ' '/duration =/{gsub(/ ms/,"",$2); sum+=$2} END{printf "%.0f", sum}')
@@ -112,7 +116,7 @@ jobs:
                 | awk -F'= ' '/duration =/{gsub(/ ms/,"",$2); sum+=$2} END{printf "%.1f", sum}')
               CLASSES=$(jfr summary "$JFR" 2>&1 | awk '/jdk.ClassLoad /{print $2}')
 
-              echo "| $P | $R | $THREADS | $CONTENTION | $SR | $GC_COUNT | $GC_PAUSE | $CLASSES |" >> "$SUMMARY"
+              echo "| $P | $R | $DURATION | $THREADS | $CONTENTION | $SR | $GC_COUNT | $GC_PAUSE | $CLASSES |" >> "$SUMMARY"
             done
           done
 
