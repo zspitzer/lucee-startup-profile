@@ -34,7 +34,12 @@ jobs:
             file: jars/lucee-7.2.0.51-ALPHA-baseline.jar
         java: ['21', '25']
         skipExtensions: [false, true]
-    name: "${{ matrix.jar.name }} java${{ matrix.java }} ext=${{ !matrix.skipExtensions }}"
+        codegen: [true, false]
+        exclude:
+          - jar:
+              name: lucee-7.2.0.51-ALPHA-baseline
+            codegen: true
+    name: "${{ matrix.jar.name }} java${{ matrix.java }} ext=${{ !matrix.skipExtensions }} codegen=${{ matrix.codegen }}"
     steps:
       - uses: actions/checkout@v6
         with:
@@ -70,7 +75,7 @@ jobs:
       - name: Run startup profiles
         shell: bash
         run: |
-          LABEL="${{ steps.jar.outputs.name }}-java${{ matrix.java }}-ext${{ !matrix.skipExtensions }}"
+          LABEL="${{ steps.jar.outputs.name }}-java${{ matrix.java }}-ext${{ !matrix.skipExtensions }}-codegen${{ matrix.codegen }}"
           RESULTS="$GITHUB_WORKSPACE/results/$LABEL"
           mkdir -p "$RESULTS"
 
@@ -100,6 +105,7 @@ jobs:
 
               export FELIX_RESOLVER_PARALLELISM="$P"
               export FELIX_SYSTEMBUNDLE_ACTIVATORS_START_PARALLELISM="$P"
+              export LUCEE_LIBRARY_CODEGEN="${{ matrix.codegen }}"
               if [ "${{ matrix.skipExtensions }}" = "true" ]; then
                 export LUCEE_EXTENSIONS_INSTALL=false
               fi
@@ -153,7 +159,7 @@ jobs:
       - name: Extract metrics
         shell: bash
         run: |
-          LABEL="${{ steps.jar.outputs.name }}-java${{ matrix.java }}-ext${{ !matrix.skipExtensions }}"
+          LABEL="${{ steps.jar.outputs.name }}-java${{ matrix.java }}-ext${{ !matrix.skipExtensions }}-codegen${{ matrix.codegen }}"
           RESULTS="$GITHUB_WORKSPACE/results/$LABEL"
 
           IFS=',' read -ra PARALLELISM_VALUES <<< "${{ inputs.parallelism }}"
@@ -211,13 +217,13 @@ jobs:
       - name: Post summary
         shell: bash
         run: |
-          LABEL="${{ steps.jar.outputs.name }}-java${{ matrix.java }}-ext${{ !matrix.skipExtensions }}"
+          LABEL="${{ steps.jar.outputs.name }}-java${{ matrix.java }}-ext${{ !matrix.skipExtensions }}-codegen${{ matrix.codegen }}"
           cat "$GITHUB_WORKSPACE/results/$LABEL/summary.md" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Write metrics CSV
         shell: bash
         run: |
-          LABEL="${{ steps.jar.outputs.name }}-java${{ matrix.java }}-ext${{ !matrix.skipExtensions }}"
+          LABEL="${{ steps.jar.outputs.name }}-java${{ matrix.java }}-ext${{ !matrix.skipExtensions }}-codegen${{ matrix.codegen }}"
           RESULTS="$GITHUB_WORKSPACE/results/$LABEL"
           CSV="$RESULTS/metrics.csv"
 
@@ -240,14 +246,15 @@ jobs:
                 }
               fi
               # CSV: jar,java,ext,parallelism,run,type,duration,contention,gc_count,gc_pause
-              echo "${{ steps.jar.outputs.name }},${{ matrix.java }},${{ !matrix.skipExtensions }},$P,$R,$TYPE,$DUR,$CONT,${GC_CNT:-0},${GC_PAUSE:-0}" >> "$CSV"
+              # CSV: jar,java,ext,parallelism,run,type,duration,contention,gc_count,gc_pause,codegen
+              echo "${{ steps.jar.outputs.name }},${{ matrix.java }},${{ !matrix.skipExtensions }},$P,$R,$TYPE,$DUR,$CONT,${GC_CNT:-0},${GC_PAUSE:-0},${{ matrix.codegen }}" >> "$CSV"
             done
           done
 
       - name: Upload results
         uses: actions/upload-artifact@v7
         with:
-          name: "startup-profile-${{ steps.jar.outputs.name }}-java${{ matrix.java }}-ext${{ !matrix.skipExtensions }}"
+          name: "startup-profile-${{ steps.jar.outputs.name }}-java${{ matrix.java }}-ext${{ !matrix.skipExtensions }}-codegen${{ matrix.codegen }}"
           path: results/
 
   compare:
@@ -264,7 +271,7 @@ jobs:
         shell: bash
         run: |
           # Collect all CSV files
-          # CSV: jar,java,ext,parallelism,run,type,duration,contention,gc_count,gc_pause
+          # CSV: jar,java,ext,parallelism,run,type,duration,contention,gc_count,gc_pause,codegen
           cat $(find . -name "metrics.csv") > all.csv
 
           SUMMARY="comparison.md"
@@ -274,6 +281,15 @@ jobs:
           echo "**Parallelism:** ${{ inputs.parallelism }}" >> "$SUMMARY"
           echo "**Runs:** ${{ inputs.runs }} (run 1 = cold deploy, run 2+ = warm start)" >> "$SUMMARY"
           echo "" >> "$SUMMARY"
+
+          # Helper: compute percentage delta, returns "—" if base is 0
+          pct_delta() {
+            local val="$1" base="$2"
+            awk -v v="$val" -v b="$base" 'BEGIN{ if(b+0>0) printf "%+.0f%%", (v-b)/b*100; else print "—" }'
+          }
+
+          # Check if we have JFR data
+          HAS_JFR=$(awk -F',' '$8 > 0 || $9 > 0 {found=1; exit} END{print found+0}' all.csv)
 
           # Generate tables for cold and warm separately
           for START_TYPE in cold warm; do
@@ -287,21 +303,19 @@ jobs:
             fi
             echo "" >> "$SUMMARY"
 
-            # Check if we have JFR data (any non-zero contention/gc values)
-            HAS_JFR=$(awk -F',' '$8 > 0 || $9 > 0 {found=1; exit} END{print found+0}' all.csv)
-
             if [ "$HAS_JFR" = "1" ]; then
-              echo "| Java | Extensions | JAR | Avg Duration (ms) | Dur Δ | Avg Contention (ms) | Cont Δ | Avg GC Count | GC Δ | Avg GC Pause (ms) | Pause Δ |" >> "$SUMMARY"
+              echo "| Java | Ext | Config | Avg Duration (ms) | Dur Δ | Avg Contention (ms) | Cont Δ | Avg GC Count | GC Δ | Avg GC Pause (ms) | Pause Δ |" >> "$SUMMARY"
               echo "|---|---|---|---|---|---|---|---|---|---|---|" >> "$SUMMARY"
             else
-              echo "| Java | Extensions | JAR | Avg Duration (ms) | Dur Δ |" >> "$SUMMARY"
+              echo "| Java | Ext | Config | Avg Duration (ms) | Dur Δ |" >> "$SUMMARY"
               echo "|---|---|---|---|---|" >> "$SUMMARY"
             fi
 
             # Calculate averages per config, filtered by type
+            # Key: java,ext,jar,codegen
             awk -F',' -v stype="$START_TYPE" '
             $6 == stype {
-              key = $2 SUBSEP $3 SUBSEP $1
+              key = $2 SUBSEP $3 SUBSEP $1 SUBSEP $11
               dur[key] += $7
               cont[key] += $8
               gc_cnt[key] += $9
@@ -311,47 +325,48 @@ jobs:
             END {
               for (k in dur) {
                 split(k, a, SUBSEP)
-                java = a[1]; ext = a[2]; jar = a[3]
-                printf "%s,%s,%s,%.0f,%.0f,%.0f,%.1f\n", java, ext, jar, dur[k]/count[k], cont[k]/count[k], gc_cnt[k]/count[k], gc_pause[k]/count[k]
+                printf "%s,%s,%s,%s,%.0f,%.0f,%.0f,%.1f\n", a[1], a[2], a[3], a[4], dur[k]/count[k], cont[k]/count[k], gc_cnt[k]/count[k], gc_pause[k]/count[k]
               }
             }' all.csv | sort > "averages-${START_TYPE}.csv"
 
-            # Helper: compute percentage delta, returns "—" if base is 0
-            pct_delta() {
-              local val="$1" base="$2"
-              awk -v v="$val" -v b="$base" 'BEGIN{ if(b+0>0) printf "%+.0f%%", (v-b)/b*100; else print "—" }'
-            }
-
-            # Pair patched vs baseline and compute deltas
-            while IFS=',' read -r java ext jar avg_dur avg_cont avg_gc_cnt avg_gc_pause; do
-              if [[ "$jar" == *baseline* ]]; then
-                continue
-              fi
-              base_jar=$(echo "$jar" | sed 's/$/-baseline/')
-              base_line=$(grep "^$java,$ext,$base_jar," "averages-${START_TYPE}.csv" || echo "")
-              if [ -n "$base_line" ]; then
-                base_dur=$(echo "$base_line" | cut -d',' -f4)
-                base_cont=$(echo "$base_line" | cut -d',' -f5)
-                base_gc_cnt=$(echo "$base_line" | cut -d',' -f6)
-                base_gc_pause=$(echo "$base_line" | cut -d',' -f7)
-                dur_delta=$(pct_delta "$avg_dur" "$base_dur")
-                cont_delta=$(pct_delta "$avg_cont" "$base_cont")
-                gc_cnt_delta=$(pct_delta "$avg_gc_cnt" "$base_gc_cnt")
-                gc_pause_delta=$(pct_delta "$avg_gc_pause" "$base_gc_pause")
-              else
-                base_dur="?"; base_cont="?"; base_gc_cnt="?"; base_gc_pause="?"
-                dur_delta="?"; cont_delta="?"; gc_cnt_delta="?"; gc_pause_delta="?"
-              fi
+            # Group by java+ext, show all configs with delta vs codegen=false of same JAR
+            prev_java=""; prev_ext=""
+            while IFS=',' read -r java ext jar codegen avg_dur avg_cont avg_gc_cnt avg_gc_pause; do
               ext_label="yes"
               [ "$ext" = "false" ] && ext_label="no"
-              if [ "$HAS_JFR" = "1" ]; then
-                echo "| $java | $ext_label | **patched** | **$avg_dur** | | **$avg_cont** | | **$avg_gc_cnt** | | **$avg_gc_pause** | |" >> "$SUMMARY"
-                echo "| $java | $ext_label | baseline | $base_dur | $dur_delta | $base_cont | $cont_delta | $base_gc_cnt | $gc_cnt_delta | $base_gc_pause | $gc_pause_delta |" >> "$SUMMARY"
+
+              # Find the codegen=false version of the same jar for delta
+              ref_line=$(grep "^$java,$ext,$jar,false," "averages-${START_TYPE}.csv" || echo "")
+              if [ -n "$ref_line" ] && [ "$codegen" = "true" ]; then
+                ref_dur=$(echo "$ref_line" | cut -d',' -f5)
+                dur_delta=$(pct_delta "$avg_dur" "$ref_dur")
+                if [ "$HAS_JFR" = "1" ]; then
+                  ref_cont=$(echo "$ref_line" | cut -d',' -f6)
+                  ref_gc_cnt=$(echo "$ref_line" | cut -d',' -f7)
+                  ref_gc_pause=$(echo "$ref_line" | cut -d',' -f8)
+                  cont_delta=$(pct_delta "$avg_cont" "$ref_cont")
+                  gc_cnt_delta=$(pct_delta "$avg_gc_cnt" "$ref_gc_cnt")
+                  gc_pause_delta=$(pct_delta "$avg_gc_pause" "$ref_gc_pause")
+                fi
               else
-                echo "| $java | $ext_label | **patched** | **$avg_dur** | |" >> "$SUMMARY"
-                echo "| $java | $ext_label | baseline | $base_dur | $dur_delta |" >> "$SUMMARY"
+                dur_delta=""; cont_delta=""; gc_cnt_delta=""; gc_pause_delta=""
               fi
-            done < <(grep -v "baseline" "averages-${START_TYPE}.csv" | sort)
+
+              # Build label
+              if [[ "$jar" == *baseline* ]]; then
+                config_label="baseline"
+              elif [ "$codegen" = "true" ]; then
+                config_label="**codegen**"
+              else
+                config_label="no-codegen"
+              fi
+
+              if [ "$HAS_JFR" = "1" ]; then
+                echo "| $java | $ext_label | $config_label | $avg_dur | $dur_delta | $avg_cont | $cont_delta | $avg_gc_cnt | $gc_cnt_delta | $avg_gc_pause | $gc_pause_delta |" >> "$SUMMARY"
+              else
+                echo "| $java | $ext_label | $config_label | $avg_dur | $dur_delta |" >> "$SUMMARY"
+              fi
+            done < <(sort -t',' -k1,1 -k2,2 -k3,3 -k4,4r "averages-${START_TYPE}.csv")
 
             echo "" >> "$SUMMARY"
           done
