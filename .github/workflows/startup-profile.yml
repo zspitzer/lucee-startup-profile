@@ -18,6 +18,10 @@ on:
       runs:
         description: 'Runs per config'
         default: '3'
+      skipExtensions:
+        description: 'Set LUCEE_EXTENSIONS_INSTALL=false (like light JAR)'
+        type: boolean
+        default: false
 
 jobs:
   profile:
@@ -93,6 +97,9 @@ jobs:
 
               export FELIX_RESOLVER_PARALLELISM="$P"
               export FELIX_SYSTEMBUNDLE_ACTIVATORS_START_PARALLELISM="$P"
+              if [ "${{ inputs.skipExtensions }}" = "true" ]; then
+                export LUCEE_EXTENSIONS_INSTALL=false
+              fi
 
               START_NS=$(date +%s%N)
 
@@ -130,6 +137,7 @@ jobs:
           echo "**Runner:** $(nproc) cores" >> "$SUMMARY"
           echo "**Parallelism:** ${{ inputs.parallelism }}" >> "$SUMMARY"
           echo "**Runs:** ${{ inputs.runs }}" >> "$SUMMARY"
+          echo "**Skip extensions:** ${{ inputs.skipExtensions }}" >> "$SUMMARY"
           echo "" >> "$SUMMARY"
           echo "| Parallelism | Run | Duration (ms) | Threads | Contention (ms) | SecureRandom (ms) | GC count | GC pause (ms) | Classes |" >> "$SUMMARY"
           echo "|---|---|---|---|---|---|---|---|---|" >> "$SUMMARY"
